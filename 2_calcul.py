@@ -4,16 +4,6 @@ carbone du transport des œuvres selon la norme ISO 14083, et produit un classeu
 
 Formule ISO 14083 :  émissions = distance (km) × masse (t) × facteur d'émission (kgCO2e/t.km)
 
-Chaque paramètre est soit SOURCÉ (référence sectorielle ou normative), soit explicitement
-ASSUMÉ comme hypothèse de travail. Voir JUSTIFICATIONS.md pour le détail choix par choix.
-
-Conventions de distance (EN 16258, complétée par Ballou et al. 2002) :
-- la norme EN 16258 demande la « distance réelle parcourue » ; en avion, elle impose
-  « la distance orthodromique augmentée de 95 kilomètres » ;
-- pour la route, la norme ne dit pas comment estimer la distance réelle quand elle est
-  inconnue : on approxime alors distance réelle ≈ orthodromie × facteur de détour national
-  (Ballou, Rahardja & Sakai, 2002 — chaque pays a son propre facteur ; table en annexe du mémoire).
-
 Lancement : uv run 2_calcul.py  (après avoir lancé 1_extraction.py)
 """
 
@@ -24,13 +14,11 @@ from pathlib import Path
 from openpyxl import Workbook
 
 # =============================================================================
-# PARAMÈTRES ET HYPOTHÈSES — chaque valeur est sourcée ou assumée (cf. JUSTIFICATIONS.md)
-# =============================================================================
 
 FICHIER_DONNEES = Path("donnees") / "mouvements_bruts.json"
 FICHIER_SORTIE = Path("sorties") / "resultats.xlsx"
 
-# Siège du Frac Picardie (Amiens) — confirmé par l'API (lat/lon des mouvements internes).
+# Siège du Frac Picardie (Amiens).
 SIEGE_LAT, SIEGE_LON = 49.886, 2.31153
 
 # --- Distances ---------------------------------------------------------------
@@ -40,20 +28,17 @@ SUPPLEMENT_AERIEN_KM = 95
 # Routier : facteurs de détour nationaux (Ballou et al. 2002, Table 1).
 # La distance réelle est approchée par : orthodromie × facteur du pays de destination.
 FACTEUR_DETOUR = {
-    "France": 1.65,       # n=9 points, écart-type 0,46 (petit échantillon, à discuter)
+    "France": 1.65,
     "Italie": 1.18,
     "Allemagne": 1.32,
     "Espagne": 1.58,
-    "Royaume-Uni": 1.40,  # « England » dans la table d'origine
+    "Royaume-Uni": 1.40,
     "Pologne": 1.21,
     "Hongrie": 1.35,
 }
 FACTEUR_DETOUR_EUROPE = 1.46  # moyenne « Europe » de Ballou (n=199), pour les pays absents
 
-# --- Masse (« trou dans la raquette » : absente des CMS) ----------------------
-# 1) Masse « œuvre nue » : forfait par domaine = HYPOTHÈSE DE TRAVAIL ASSUMÉE
-#    (aucune source sectorielle ne publie de poids types par domaine).
-#    On retient le PREMIER domaine listé quand le champ en contient plusieurs.
+# --- Masse (forfaits définis).
 MASSE_OEUVRE_NUE_KG = {
     "Dessin": 4,
     "Estampe": 4,
@@ -65,39 +50,28 @@ MASSE_OEUVRE_NUE_KG = {
 }
 MASSE_OEUVRE_DEFAUT_KG = 15   # si le domaine n'est pas dans la liste
 
-# 2) Conditionnement : +30 % — convention documentée du calculateur GCC
-#    (« we will assume a 30% addition to the weight » quand le poids n'inclut pas la caisse).
+# Conditionnement : +30 % à l'oeuvre nue — convention reprise du calculateur GCC
+
 MAJORATION_CONDITIONNEMENT = 1.30
 
-# --- Mode de transport (absent des CMS) ---------------------------------------
+# --- Mode de transport (hypothèses) ---
 # Règle d'imputation : Europe = routier / hors Europe = aérien.
-# Étayée par : diagnostic Platform/Les Augures 2024 (fret des FRAC 100 % routier, pas d'avion)
-# et GCC 2022 (l'aérien domine le fret d'art international). Maritime ignoré (quasi absent).
+
 PAYS_EUROPE = {
     "France", "Allemagne", "Belgique", "Pays-Bas", "Espagne", "Italie", "Portugal",
     "Suisse", "Royaume-Uni", "Luxembourg", "Autriche", "Danemark", "Irlande",
     "Pologne", "Suède", "Norvège", "Finlande", "Grèce", "République tchèque", "Hongrie",
 }
 
-# --- Facteurs d'émission (kgCO2e par tonne-kilomètre) — ADEME Base Carbone® v23.11 ----
-# Source : export CSV officiel Base_Carbone_V23.11.csv (copie : zotero/documents/), fiches
-# au statut « Valide générique » ; extrait reproduit en annexe du mémoire.
-# Routier : « Articulé, 34 à 40 tonnes, Diesel routier (incorporation 7 % de bio) »
-#           = 0,0875 kgCO2e/t.km (±70 %). NB : facteur t.km = allocation au prorata de la
-#           masse dans un camion moyen du parc ; borne basse si transport dédié peu chargé.
-#           (L'ancienne fiche « messagerie, ensemble articulé » est ARCHIVÉE dans la v23.11.)
-# Aérien  : « Avion cargo, plus de 100 tonnes, >5000 kms, 2023, AVEC traînées »
-#           = 1,01 kgCO2e/t.km (±70 %) — nos 8 vols hors Europe sont tous > 5 000 km.
-#           Variante SANS traînées = 0,556 (±10 %) : utilisée en analyse de sensibilité.
-#           Le choix AVEC traînées suit la pratique sectorielle (GCC/DEFRA : inclure les
-#           effets non-CO2 de l'aviation). Cohérence kérosène : doc Base IMPACTS 2016
-#           (0,33 kg/t.km longue distance × ~3,15 ≈ 1,04 kgCO2/t.km combustion seule).
+# --- Facteurs d'émission (kgCO2e par tonne-kilomètre) — ADEME Base Carbone® v23.11 ---
+# Source : Base_Carbone_V23.11
+# Routier : « Articulé, 34 à 40 tonnes, Diesel routier » = 0,0875 kgCO2e/t.km
+# Aérien  : « Avion cargo, plus de 100 tonnes, >5000 kms, 2023, AVEC traînées » = 1,01 kgCO2e/t.km
+
 FE_KG_PAR_TKM = {
     "Routier": 0.0875,
     "Aérien": 1.01,
 }
-FE_AERIEN_SANS_TRAINEES = 0.556   # pour l'analyse de sensibilité
-
 
 # =============================================================================
 # FONCTIONS
@@ -127,7 +101,7 @@ def haversine_km(lat1, lon1, lat2, lon2) -> float:
 
 
 def imputer_masse_kg(domaines: str) -> float:
-    """Masse imputée (kg) = forfait « œuvre nue » (assumé) × 1,30 conditionnement (GCC)."""
+    """Masse imputée (kg) = forfait « œuvre nue » × 1,30 conditionnement (GCC)."""
     premier = (domaines or "").split(",")[0].strip()
     nue = MASSE_OEUVRE_NUE_KG.get(premier, MASSE_OEUVRE_DEFAUT_KG)
     return round(nue * MAJORATION_CONDITIONNEMENT, 1)
