@@ -72,6 +72,9 @@ FE_KG_PAR_TKM = {
     "Routier": 0.0875,
     "Aérien": 1.01,
 }
+# Variante de sensibilité aérienne SANS traînées (effets hors-CO2 exclus).
+# ADEME Base Carbone v23.11 — « Avion cargo, >100 t, >5000 km, 2023, SANS traînées » = 0,556 (±10 %).
+FE_AERIEN_SANS_TRAINEES = 0.556
 
 # =============================================================================
 # FONCTIONS
@@ -101,10 +104,27 @@ def haversine_km(lat1, lon1, lat2, lon2) -> float:
 
 
 def imputer_masse_kg(domaines: str) -> float:
-    """Masse imputée (kg) = forfait « œuvre nue » × 1,30 conditionnement (GCC)."""
+    """Masse imputée d'UNE œuvre (kg) = forfait « œuvre nue » × 1,30 conditionnement (GCC).
+
+    Le domaine retenu est le premier de la liste `concerned_domains` (domaine dominant
+    du mouvement) : la donnée Navigart ne fournit pas le domaine œuvre par œuvre.
+    """
     premier = (domaines or "").split(",")[0].strip()
     nue = MASSE_OEUVRE_NUE_KG.get(premier, MASSE_OEUVRE_DEFAUT_KG)
     return round(nue * MAJORATION_CONDITIONNEMENT, 1)
+
+
+def compter_oeuvres(mvt: dict) -> int:
+    """Nombre d'œuvres transportées dans le mouvement (collection + hors collection).
+
+    Un « mouvement » Navigart est un lot : il embarque plusieurs œuvres (champ
+    `dos_nb_oeu_coll`, jusqu'à quelques centaines). On somme donc les masses œuvre
+    par œuvre. Faute de domaine par œuvre, toutes sont estimées au forfait du domaine
+    dominant. Défaut prudent : au moins une œuvre.
+    """
+    coll = int(mvt.get("dos_nb_oeu_coll") or 0)
+    hcoll = int(mvt.get("dos_nb_oeu_hcoll") or 0)
+    return max(1, coll + hcoll)
 
 
 def choisir_mode(pays: str) -> str:
@@ -139,11 +159,14 @@ def calculer_ligne(mvt: dict) -> dict:
     distance_km, convention = distance_ar_km(
         mvt.get("latitude"), mvt.get("longitude"), pays, mode
     )
-    masse_kg = imputer_masse_kg(domaines)
+    nb_oeuvres = compter_oeuvres(mvt)
+    masse_unitaire_kg = imputer_masse_kg(domaines)
+    # Masse transportée = somme des œuvres du lot (masse unitaire × nombre d'œuvres).
+    masse_totale_kg = round(masse_unitaire_kg * nb_oeuvres, 1)
     fe = FE_KG_PAR_TKM[mode]
 
     # Émissions ISO 14083 = distance (km) × masse (t) × FE (kgCO2e/t.km)
-    emissions = None if distance_km is None else round((masse_kg / 1000) * distance_km * fe, 3)
+    emissions = None if distance_km is None else round((masse_totale_kg / 1000) * distance_km * fe, 3)
 
     return {
         "titre": mvt.get("title", ""),
@@ -153,7 +176,9 @@ def calculer_ligne(mvt: dict) -> dict:
         "dates": mvt.get("exhibition_dates", ""),
         "distance_km_AR": distance_km,
         "convention_distance": convention or "",
-        "masse_kg_imputee": masse_kg,
+        "nb_oeuvres": nb_oeuvres,
+        "masse_kg_unitaire": masse_unitaire_kg,
+        "masse_kg_totale": masse_totale_kg,
         "mode": mode,
         "fe_kg_tkm": fe,
         "emissions_kgCO2e": emissions,
@@ -169,7 +194,8 @@ def ecrire_excel(lignes: list[dict]) -> float:
     f1.title = "Mouvements"
     colonnes = [
         "titre", "domaine", "ville", "pays", "dates", "distance_km_AR",
-        "convention_distance", "masse_kg_imputee", "mode", "fe_kg_tkm", "emissions_kgCO2e",
+        "convention_distance", "nb_oeuvres", "masse_kg_unitaire", "masse_kg_totale",
+        "mode", "fe_kg_tkm", "emissions_kgCO2e",
     ]
     f1.append(colonnes)
     for ligne in lignes:
@@ -177,7 +203,7 @@ def ecrire_excel(lignes: list[dict]) -> float:
 
     total = sum(l["emissions_kgCO2e"] for l in lignes if l["emissions_kgCO2e"] is not None)
     f1.append([])
-    f1.append(["TOTAL (kgCO2e)"] + [""] * 9 + [round(total, 2)])
+    f1.append(["TOTAL (kgCO2e)"] + [""] * (len(colonnes) - 2) + [round(total, 2)])
 
     # --- Feuille 2 : cartographie des « trous dans la raquette » (ISO 14083) ---
     f2 = classeur.create_sheet("Cartographie ISO 14083")
@@ -187,7 +213,8 @@ def ecrire_excel(lignes: list[dict]) -> float:
         ("Point de départ explicite", "Absent", "Hypothèse : retour au siège (Amiens)"),
         ("Distance réelle parcourue", "Absent", "Route : ortho × détour national (Ballou 2002) ; Air : +95 km/vol (EN 16258)"),
         ("Date précise de transport", "Partiel (dates d'expo)", "Non utilisée pour la distance"),
-        ("Masse de l'œuvre", "Absent", "Forfait par domaine (hypothèse assumée)"),
+        ("Nombre d'œuvres du lot", "Disponible (dos_nb_oeu_coll/hcoll)", "Masse sommée sur toutes les œuvres du mouvement"),
+        ("Masse de l'œuvre", "Absent", "Forfait par domaine dominant, appliqué à chaque œuvre du lot (hypothèse assumée)"),
         ("Masse du conditionnement", "Absent", "+30 % (convention GCC)"),
         ("Volume / poids volumétrique", "Absent", "Non traité (limite ; tarification au volume documentée par LP Art)"),
         ("Mode de transport", "Absent", "Imputé : Europe=routier / hors=aérien (Platform 2024 ; GCC 2022)"),
@@ -208,6 +235,7 @@ def ecrire_excel(lignes: list[dict]) -> float:
     for dom, m in MASSE_OEUVRE_NUE_KG.items():
         f3.append([f"Masse œuvre nue — {dom} (kg)", m, "Hypothèse de travail assumée (à affiner)"])
     f3.append(["Masse œuvre nue — défaut (kg)", MASSE_OEUVRE_DEFAUT_KG, "Hypothèse de travail assumée"])
+    f3.append(["Masse du mouvement", "masse unitaire × nombre d'œuvres du lot", "Navigart : dos_nb_oeu_coll + dos_nb_oeu_hcoll (domaine dominant supposé pour tout le lot)"])
     f3.append(["Conditionnement", "+30 %", "Convention GCC Carbon Calculator (2024)"])
     f3.append(["Règle de mode", "Europe = routier / hors Europe = aérien", "Platform/Les Augures 2024 ; GCC 2022"])
     f3.append(["FE routier (kgCO2e/t.km)", FE_KG_PAR_TKM["Routier"], "ADEME Base Carbone v23.11 — Articulé 34-40 t, diesel 7 % bio (±70 %)"])
@@ -230,7 +258,9 @@ def main() -> None:
     dist_tot = sum(l["distance_km_AR"] for l in lignes if l["distance_km_AR"])
     # Sensibilité : total recalculé avec le FE aérien SANS traînées
     total_sans = (total - emis_aerien) + emis_aerien * FE_AERIEN_SANS_TRAINEES / FE_KG_PAR_TKM["Aérien"]
+    nb_oeuvres = sum(l["nb_oeuvres"] for l in lignes)
     print(f"Mouvements traites        : {len(lignes)}")
+    print(f"Oeuvres transportees      : {nb_oeuvres}")
     print(f"Dont aeriens (hors Europe): {nb_aerien}")
     print(f"Distance totale corrigee  : {round(dist_tot)} km")
     print(f"Total emissions estimees  : {round(total, 2)} kgCO2e (aerien AVEC trainees)")
