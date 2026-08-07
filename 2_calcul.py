@@ -72,9 +72,6 @@ FE_KG_PAR_TKM = {
     "Routier": 0.0875,
     "Aérien": 1.01,
 }
-# Variante de sensibilité aérienne SANS traînées (effets hors-CO2 exclus).
-# ADEME Base Carbone v23.11 — « Avion cargo, >100 t, >5000 km, 2023, SANS traînées » = 0,556 (±10 %).
-FE_AERIEN_SANS_TRAINEES = 0.556
 
 # =============================================================================
 # FONCTIONS
@@ -240,8 +237,6 @@ def ecrire_excel(lignes: list[dict]) -> float:
     f3.append(["Règle de mode", "Europe = routier / hors Europe = aérien", "Platform/Les Augures 2024 ; GCC 2022"])
     f3.append(["FE routier (kgCO2e/t.km)", FE_KG_PAR_TKM["Routier"], "ADEME Base Carbone v23.11 — Articulé 34-40 t, diesel 7 % bio (±70 %)"])
     f3.append(["FE aérien (kgCO2e/t.km)", FE_KG_PAR_TKM["Aérien"], "ADEME Base Carbone v23.11 — Avion cargo >100 t, >5000 km, 2023, AVEC traînées (±70 %)"])
-    f3.append(["FE aérien SANS traînées", FE_AERIEN_SANS_TRAINEES, "ADEME Base Carbone v23.11 (±10 %) — variante de sensibilité"])
-    f3.append(["Sensibilité", "Émissions proportionnelles à masse et FE", "Doubler la masse double le résultat"])
 
     FICHIER_SORTIE.parent.mkdir(exist_ok=True)
     classeur.save(FICHIER_SORTIE)
@@ -256,8 +251,6 @@ def main() -> None:
     nb_aerien = sum(1 for l in lignes if l["mode"] == "Aérien")
     emis_aerien = sum(l["emissions_kgCO2e"] for l in lignes if l["mode"] == "Aérien" and l["emissions_kgCO2e"])
     dist_tot = sum(l["distance_km_AR"] for l in lignes if l["distance_km_AR"])
-    # Sensibilité : total recalculé avec le FE aérien SANS traînées
-    total_sans = (total - emis_aerien) + emis_aerien * FE_AERIEN_SANS_TRAINEES / FE_KG_PAR_TKM["Aérien"]
     nb_oeuvres = sum(l["nb_oeuvres"] for l in lignes)
     print(f"Mouvements traites        : {len(lignes)}")
     print(f"Oeuvres transportees      : {nb_oeuvres}")
@@ -266,7 +259,6 @@ def main() -> None:
     print(f"Total emissions estimees  : {round(total, 2)} kgCO2e (aerien AVEC trainees)")
     if total:
         print(f"  - part aerienne         : {round(100 * emis_aerien / total)} %")
-    print(f"Sensibilite SANS trainees : {round(total_sans, 2)} kgCO2e")
     print(f"Classeur ecrit dans       : {FICHIER_SORTIE}")
 
 

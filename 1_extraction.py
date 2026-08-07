@@ -1,5 +1,5 @@
 """
-1_extraction.py — Récupère un échantillon de mouvements d'œuvres du Frac Picardie
+1_extraction.py — Récupère l'ensemble des mouvements d'œuvres du Frac Picardie
 via l'API Navigart, et sauvegarde la réponse brute en local (cache).
 
 Pourquoi séparer l'extraction du calcul ?
@@ -16,22 +16,44 @@ import requests
 
 # --- Paramètres --------------------------------------------------------------
 URL_API = "https://api.navigart.fr/44/movements"   # collection du Frac Picardie
-TAILLE_ECHANTILLON = 100           # nb de mouvements récupérés (~10 % de la collection)
+TAILLE_LOT = 200    # nb de mouvements récupérés par requête (pagination)
 DOSSIER_DONNEES = Path("donnees")
 FICHIER_SORTIE = DOSSIER_DONNEES / "mouvements_bruts.json"
 
 
-def recuperer_mouvements(taille: int) -> dict:
-    """Interroge l'API Navigart et renvoie la réponse JSON complète."""
+def recuperer_lot(depart: int, taille: int) -> dict:
+    """Interroge l'API Navigart pour un lot et renvoie la réponse JSON complète."""
     # 'from' = index de départ, 'size' = nombre d'éléments (convention Elasticsearch)
-    parametres = {"from": 0, "size": taille}
-    reponse = requests.get(URL_API, params=parametres, timeout=30)
+    parametres = {"from": depart, "size": taille}
+    reponse = requests.get(URL_API, params=parametres, timeout=60)
     reponse.raise_for_status()     # lève une erreur si le serveur répond mal
     return reponse.json()
 
 
+def recuperer_tous_les_mouvements() -> dict:
+    """Parcourt toute la collection par lots successifs et renvoie la réponse
+    complète (même structure que l'API : `totalCount` + liste `results`)."""
+    premier = recuperer_lot(0, TAILLE_LOT)
+    total = int(premier.get("totalCount", 0))
+    resultats = list(premier.get("results", []))
+
+    # Lots suivants jusqu'à couvrir tout `totalCount`.
+    depart = len(resultats)
+    while depart < total:
+        lot = recuperer_lot(depart, TAILLE_LOT)
+        nouveaux = lot.get("results", [])
+        if not nouveaux:               # garde-fou : l'API ne renvoie plus rien
+            break
+        resultats.extend(nouveaux)
+        depart += len(nouveaux)
+        print(f"  ... {len(resultats)}/{total} mouvements recuperes")
+
+    premier["results"] = resultats
+    return premier
+
+
 def main() -> None:
-    donnees = recuperer_mouvements(TAILLE_ECHANTILLON)
+    donnees = recuperer_tous_les_mouvements()
 
     total = donnees.get("totalCount", "?")
     resultats = donnees.get("results", [])
